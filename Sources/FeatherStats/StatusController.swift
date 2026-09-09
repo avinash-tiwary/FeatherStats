@@ -4,26 +4,22 @@ import AppKit
 final class StatusController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
-    private let panel = MetricsPanelView(frame: NSRect(x: 0, y: 0, width: 330, height: 246))
+    private let intervalMenu = NSMenu()
+    private let panel = MetricsPanelView(frame: NSRect(x: 0, y: 0, width: 304, height: 206))
     private let sampler = SystemMetricsSampler()
     private var timer: Timer?
+    private var refreshInterval: TimeInterval = 3
+
+    private static let allowedIntervals: [TimeInterval] = [1, 3, 5, 10, 30]
 
     override init() {
         super.init()
+        refreshInterval = Self.savedRefreshInterval()
         configureStatusItem()
         configureMenu()
         sampler.primeCPU()
         update()
-
-        let timer = Timer(
-            timeInterval: 3,
-            target: self,
-            selector: #selector(timerFired),
-            userInfo: nil,
-            repeats: true
-        )
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        scheduleTimer()
     }
 
     private func configureStatusItem() {
@@ -46,10 +42,23 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.addItem(panelItem)
         menu.addItem(.separator())
 
-        let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
-        refresh.target = self
-        refresh.isEnabled = true
-        menu.addItem(refresh)
+        intervalMenu.autoenablesItems = false
+        for interval in Self.allowedIntervals {
+            let unit = interval == 1 ? "second" : "seconds"
+            let item = NSMenuItem(
+                title: "\(Int(interval)) \(unit)",
+                action: #selector(setRefreshInterval(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = NSNumber(value: interval)
+            item.isEnabled = true
+            intervalMenu.addItem(item)
+        }
+        let intervalItem = NSMenuItem(title: "Update every", action: nil, keyEquivalent: "")
+        intervalItem.submenu = intervalMenu
+        menu.addItem(intervalItem)
+        updateIntervalCheckmarks()
 
         let quit = NSMenuItem(title: "Quit FeatherStats", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -58,11 +67,22 @@ final class StatusController: NSObject, NSMenuDelegate {
         statusItem.menu = menu
     }
 
-    func menuWillOpen(_ menu: NSMenu) { update() }
-
-    @objc private func refreshNow() { update() }
+    func menuWillOpen(_ menu: NSMenu) {
+        update()
+        updateIntervalCheckmarks()
+    }
 
     @objc private func timerFired() { update() }
+
+    @objc private func setRefreshInterval(_ sender: NSMenuItem) {
+        guard let interval = (sender.representedObject as? NSNumber)?.doubleValue,
+              Self.allowedIntervals.contains(interval) else { return }
+        refreshInterval = interval
+        UserDefaults.standard.set(interval, forKey: "refreshInterval")
+        updateIntervalCheckmarks()
+        scheduleTimer()
+        update()
+    }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }
 
@@ -79,6 +99,31 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     private static func shortBytes(_ bytes: UInt64) -> String {
         String(format: "%.1fG", Double(bytes) / 1_073_741_824)
+    }
+
+    private func scheduleTimer() {
+        timer?.invalidate()
+        let timer = Timer(
+            timeInterval: refreshInterval,
+            target: self,
+            selector: #selector(timerFired),
+            userInfo: nil,
+            repeats: true
+        )
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func updateIntervalCheckmarks() {
+        for item in intervalMenu.items {
+            let interval = (item.representedObject as? NSNumber)?.doubleValue
+            item.state = interval == refreshInterval ? .on : .off
+        }
+    }
+
+    private static func savedRefreshInterval() -> TimeInterval {
+        let saved = UserDefaults.standard.double(forKey: "refreshInterval")
+        return allowedIntervals.contains(saved) ? saved : 3
     }
 }
 
@@ -99,20 +144,11 @@ private final class MetricsPanelView: NSView {
         title.font = .systemFont(ofSize: 15, weight: .semibold)
         title.textColor = .labelColor
 
-        let note = NSTextField(labelWithString: "Live · every 3 seconds")
-        note.font = .systemFont(ofSize: 11, weight: .regular)
-        note.textColor = .secondaryLabelColor
-
-        let headerText = NSStackView(views: [title, note])
-        headerText.orientation = .vertical
-        headerText.alignment = .leading
-        headerText.spacing = 1
-
         let mark = NSImageView(image: NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: nil) ?? NSImage())
         mark.contentTintColor = .systemMint
-        mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .medium)
+        mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
 
-        let header = NSStackView(views: [headerText, NSView(), mark])
+        let header = NSStackView(views: [title, NSView(), mark])
         header.orientation = .horizontal
         header.alignment = .centerY
 
@@ -132,7 +168,7 @@ private final class MetricsPanelView: NSView {
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ] + rows.flatMap { row in [
             row.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            row.heightAnchor.constraint(equalToConstant: 38)
+            row.heightAnchor.constraint(equalToConstant: 32)
         ] })
     }
 
@@ -142,7 +178,6 @@ private final class MetricsPanelView: NSView {
         let cpuValue = snapshot.cpuUsage ?? 0
         cpu.update(
             value: snapshot.cpuUsage.map { "\(Int($0.rounded()))%" } ?? "…",
-            detail: "Across \(snapshot.coreCount) logical cores",
             fraction: cpuValue / 100,
             severity: severity(cpuValue / 100)
         )
@@ -151,7 +186,6 @@ private final class MetricsPanelView: NSView {
             ? Double(snapshot.memoryUsed) / Double(snapshot.memoryTotal) : 0
         memory.update(
             value: "\(formatBytes(snapshot.memoryUsed)) / \(formatBytes(snapshot.memoryTotal))",
-            detail: "RAM and graphics share this pool",
             fraction: memoryFraction,
             severity: severity(memoryFraction)
         )
@@ -159,14 +193,12 @@ private final class MetricsPanelView: NSView {
         if let degrees = snapshot.temperature {
             temperature.update(
                 value: String(format: "%.0f °C", degrees),
-                detail: "Hottest chip sensor",
                 fraction: max(0, min(1, (degrees - 30) / 75)),
                 severity: degrees >= 95 ? .critical : (degrees >= 80 ? .warning : .normal)
             )
         } else {
             temperature.update(
                 value: snapshot.thermalState.label,
-                detail: "Sensor value unavailable",
                 fraction: thermalFraction(snapshot.thermalState),
                 severity: thermalSeverity(snapshot.thermalState)
             )
@@ -176,7 +208,6 @@ private final class MetricsPanelView: NSView {
             ? Double(snapshot.diskUsed) / Double(snapshot.diskTotal) : 0
         disk.update(
             value: "\(formatBytes(snapshot.diskUsed)) / \(formatBytes(snapshot.diskTotal))",
-            detail: "Macintosh HD",
             fraction: diskFraction,
             severity: severity(diskFraction)
         )
@@ -184,8 +215,7 @@ private final class MetricsPanelView: NSView {
         if let batteryPercent = snapshot.batteryPercent {
             battery.isHidden = false
             battery.update(
-                value: "\(batteryPercent)%",
-                detail: snapshot.batteryIsCharging ? "Charging" : "On battery",
+                value: "\(batteryPercent)%\(snapshot.batteryIsCharging ? " ⚡︎" : "")",
                 fraction: Double(batteryPercent) / 100,
                 severity: batteryPercent < 15 ? .critical : (batteryPercent < 30 ? .warning : .normal)
             )
@@ -217,7 +247,6 @@ private final class MetricRow: NSView {
     enum Severity { case normal, warning, critical }
 
     private let valueLabel = NSTextField(labelWithString: "—")
-    private let detailLabel = NSTextField(labelWithString: "")
     private let progress = MiniBar()
 
     init(icon: String, title: String) {
@@ -232,20 +261,12 @@ private final class MetricRow: NSView {
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         titleLabel.textColor = .labelColor
 
-        detailLabel.font = .systemFont(ofSize: 10, weight: .regular)
-        detailLabel.textColor = .secondaryLabelColor
-
-        let labels = NSStackView(views: [titleLabel, detailLabel])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = -1
-
         valueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         valueLabel.textColor = .labelColor
         valueLabel.alignment = .right
         valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let content = NSStackView(views: [image, labels, NSView(), valueLabel])
+        let content = NSStackView(views: [image, titleLabel, NSView(), valueLabel])
         content.orientation = .horizontal
         content.alignment = .centerY
         content.spacing = 9
@@ -260,19 +281,18 @@ private final class MetricRow: NSView {
             image.heightAnchor.constraint(equalToConstant: 17),
             content.leadingAnchor.constraint(equalTo: leadingAnchor),
             content.trailingAnchor.constraint(equalTo: trailingAnchor),
-            content.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            progress.leadingAnchor.constraint(equalTo: labels.leadingAnchor),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            progress.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             progress.trailingAnchor.constraint(equalTo: trailingAnchor),
-            progress.topAnchor.constraint(equalTo: content.bottomAnchor, constant: 2),
+            progress.topAnchor.constraint(equalTo: content.bottomAnchor, constant: 3),
             progress.heightAnchor.constraint(equalToConstant: 2)
         ])
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func update(value: String, detail: String, fraction: Double, severity: Severity) {
+    func update(value: String, fraction: Double, severity: Severity) {
         valueLabel.stringValue = value
-        detailLabel.stringValue = detail
         let color: NSColor = switch severity {
         case .normal: .systemMint
         case .warning: .systemOrange

@@ -8,6 +8,8 @@ FeatherStats is a tiny, native menu-bar monitor for Apple-silicon Macs. It shows
 2. Open the DMG and drag FeatherStats into Applications.
 3. Launch FeatherStats. Its gauge appears in the menu bar.
 
+Click the gauge to see all five readings. Choose **Update every** to set a 1, 3, 5, 10, or 30-second refresh interval; FeatherStats remembers the choice.
+
 The release is ad-hoc signed, not notarized. If macOS blocks the downloaded build, compile it locally using the instructions below. Public distribution without Gatekeeper warnings requires Apple Developer ID signing and notarization.
 
 ## Why it is lightweight
