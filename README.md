@@ -28,7 +28,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for the resource and differential leak-test
 Requires macOS 13 or newer, Apple silicon, and Xcode command-line tools.
 
 ```sh
-git clone REPOSITORY_URL
+# After cloning or downloading the source:
 cd FeatherStats
 ./Scripts/build_dmg.sh
 ```
